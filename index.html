@@ -109,6 +109,10 @@
     color: #ECEAE4;
     border-color: #E0A458;
   }
+  #recenter-btn:hover:not(:disabled) {
+    color: #ECEAE4;
+    border-color: #8A8D96;
+  }
   .cube-wrap {
     position: relative;
     width: 100%;
@@ -171,6 +175,7 @@
     <div class="footer-row">
       <div id="last-move" class="mono">操作なし</div>
       <div class="button-group">
+        <button id="recenter-btn">⤾ 正面に戻す</button>
         <button id="shuffle-btn">🔀 シャッフル</button>
         <button id="reset-btn">↺ リセット</button>
       </div>
@@ -269,6 +274,7 @@
   const lastMoveEl = document.getElementById('last-move');
   const resetBtn = document.getElementById('reset-btn');
   const shuffleBtn = document.getElementById('shuffle-btn');
+  const recenterBtn = document.getElementById('recenter-btn');
 
   const DEFAULT_INSTRUCTIONS = 'キューブのステッカーをタップすると、その列(青緑)と行(黄土色)がハイライトされ、上下左右の矢印が表示されます。ドラッグでビューを回転、ホイールで拡大縮小できます。';
   const SELECTED_INSTRUCTIONS = '列(青緑)と行(黄土色)がハイライトされています。上下左右いずれかの矢印をタップすると回転します。';
@@ -433,6 +439,15 @@
     return omega.clone().cross(point);
   }
 
+  function getCameraAxes() {
+    camera.updateMatrixWorld();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    camera.matrixWorld.extractBasis(right, up, forward);
+    return { right, up };
+  }
+
   function selectSticker(hit) {
     const mesh = hit.object;
     const cubie = mesh.parent;
@@ -457,16 +472,18 @@
     ).multiplyScalar(0.16);
 
     // Figure out which rotation sign actually moves THIS tapped point up
-    // vs down, and left vs right, instead of assuming a fixed sign -
-    // the true direction depends on where on the cube you tapped.
+    // vs down / left vs right *on screen*, based on the camera's current
+    // orientation - not a fixed world axis, so it stays correct no matter
+    // how the view has been dragged around.
+    const camAxes = getCameraAxes();
     const velColPlus = angularVelocity(colAxis, 1, point);
     const velColMinus = angularVelocity(colAxis, -1, point);
-    const upAngle = velColPlus.y >= velColMinus.y ? Math.PI / 2 : -Math.PI / 2;
+    const upAngle = velColPlus.dot(camAxes.up) >= velColMinus.dot(camAxes.up) ? Math.PI / 2 : -Math.PI / 2;
     const downAngle = -upAngle;
 
     const velRowPlus = angularVelocity(rowAxis, 1, point);
     const velRowMinus = angularVelocity(rowAxis, -1, point);
-    const rightAngle = velRowPlus.x >= velRowMinus.x ? Math.PI / 2 : -Math.PI / 2;
+    const rightAngle = velRowPlus.dot(camAxes.right) >= velRowMinus.dot(camAxes.right) ? Math.PI / 2 : -Math.PI / 2;
     const leftAngle = -rightAngle;
 
     const moves = {
@@ -602,10 +619,20 @@
     });
   });
 
+  recenterBtn.addEventListener('click', () => {
+    azimuth = DEFAULT_AZIMUTH;
+    polar = DEFAULT_POLAR;
+    radius = DEFAULT_RADIUS;
+    updateCameraPosition();
+  });
+
   // --- camera orbit ---
-  let azimuth = Math.PI / 4;
-  let polar = Math.PI / 3;
-  let radius = 6.4;
+  const DEFAULT_AZIMUTH = Math.PI / 4;
+  const DEFAULT_POLAR = Math.PI / 3;
+  const DEFAULT_RADIUS = 6.4;
+  let azimuth = DEFAULT_AZIMUTH;
+  let polar = DEFAULT_POLAR;
+  let radius = DEFAULT_RADIUS;
   function updateCameraPosition() {
     camera.position.x = radius * Math.sin(polar) * Math.sin(azimuth);
     camera.position.y = radius * Math.cos(polar);

@@ -154,6 +154,36 @@
   #dpad-left { grid-column: 1; grid-row: 2; }
   #dpad-right { grid-column: 3; grid-row: 2; }
   #dpad-down { grid-column: 2; grid-row: 3; }
+  .mode-switch {
+    display: flex;
+    gap: 8px;
+    margin: 10px 0;
+  }
+  .mode-btn {
+    background: transparent;
+    border: 1px solid #2F323C;
+    color: #8A8D96;
+    border-radius: 999px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+  }
+  .mode-btn.active {
+    background: #4FB6A8;
+    border-color: #4FB6A8;
+    color: #101114;
+    font-weight: 600;
+  }
+  .hidden {
+    display: none !important;
+  }
+  #phase-info {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    color: #E85D9A;
+    margin: 0 0 8px;
+  }
 </style>
 </head>
 <body>
@@ -161,6 +191,11 @@
     <div class="header">
       <div class="eyebrow">3×3 CUBE — STEP 1</div>
       <h1>回転操作の確認</h1>
+      <div class="mode-switch">
+        <button id="mode-free-btn" class="mode-btn active">自由モード</button>
+        <button id="mode-learn-btn" class="mode-btn">学習モード</button>
+      </div>
+      <p id="phase-info" class="hidden"></p>
       <p id="instructions">キューブのステッカーをタップすると、その列(青緑)と行(黄土色)がハイライトされ、上下左右の矢印が表示されます。ドラッグでビューを回転、ピンチ/ホイールで拡大縮小できます。</p>
     </div>
     <div class="cube-wrap">
@@ -198,6 +233,18 @@
     x: new THREE.Vector3(1, 0, 0),
     y: new THREE.Vector3(0, 1, 0),
     z: new THREE.Vector3(0, 0, 1),
+  };
+  // Centers never change which way they face (a move on their own layer
+  // only ever spins them around their own axis), so this mapping is a
+  // fixed ground truth for "where does color X belong" no matter how
+  // scrambled the cube is.
+  const FACE_HOME_DIR = {
+    U: new THREE.Vector3(0, 1, 0),
+    D: new THREE.Vector3(0, -1, 0),
+    L: new THREE.Vector3(-1, 0, 0),
+    R: new THREE.Vector3(1, 0, 0),
+    F: new THREE.Vector3(0, 0, 1),
+    B: new THREE.Vector3(0, 0, -1),
   };
 
   const AXIS_LAYER_NAMES = {
@@ -327,6 +374,7 @@
     const mesh = new THREE.Mesh(stickerGeometry, material);
     mesh.position.copy(normal.clone().multiplyScalar(stickerOffset));
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    mesh.userData.faceKey = faceKey;
     cubie.add(mesh);
   }
 
@@ -348,12 +396,14 @@
           const cubie = new THREE.Group();
           cubie.position.set(x, y, z);
           cubie.add(new THREE.Mesh(bodyGeometry, bodyMaterial.clone()));
-          if (x === 1) addSticker(cubie, 'R', new THREE.Vector3(1, 0, 0));
-          if (x === -1) addSticker(cubie, 'L', new THREE.Vector3(-1, 0, 0));
-          if (y === 1) addSticker(cubie, 'U', new THREE.Vector3(0, 1, 0));
-          if (y === -1) addSticker(cubie, 'D', new THREE.Vector3(0, -1, 0));
-          if (z === 1) addSticker(cubie, 'F', new THREE.Vector3(0, 0, 1));
-          if (z === -1) addSticker(cubie, 'B', new THREE.Vector3(0, 0, -1));
+          const pieceFaces = [];
+          if (x === 1) { addSticker(cubie, 'R', new THREE.Vector3(1, 0, 0)); pieceFaces.push('R'); }
+          if (x === -1) { addSticker(cubie, 'L', new THREE.Vector3(-1, 0, 0)); pieceFaces.push('L'); }
+          if (y === 1) { addSticker(cubie, 'U', new THREE.Vector3(0, 1, 0)); pieceFaces.push('U'); }
+          if (y === -1) { addSticker(cubie, 'D', new THREE.Vector3(0, -1, 0)); pieceFaces.push('D'); }
+          if (z === 1) { addSticker(cubie, 'F', new THREE.Vector3(0, 0, 1)); pieceFaces.push('F'); }
+          if (z === -1) { addSticker(cubie, 'B', new THREE.Vector3(0, 0, -1)); pieceFaces.push('B'); }
+          cubie.userData.pieceFaces = pieceFaces;
           cubeRoot.add(cubie);
           allCubies.push(cubie);
         }
@@ -369,6 +419,110 @@
   }
 
   buildCube();
+
+  // --- learn mode: phase 1, the white cross ---
+  const phaseInfoEl = document.getElementById('phase-info');
+  const modeFreeBtn = document.getElementById('mode-free-btn');
+  const modeLearnBtn = document.getElementById('mode-learn-btn');
+  const HINT_COLOR = 0xe85d9a;
+  const WHITE_EDGES = [['U', 'R'], ['U', 'L'], ['U', 'F'], ['U', 'B']];
+
+  const hintMarkerGeom = new THREE.BoxGeometry(1.02, 1.02, 1.02);
+  const hintMarker = new THREE.LineSegments(
+    new THREE.EdgesGeometry(hintMarkerGeom),
+    new THREE.LineBasicMaterial({ color: HINT_COLOR, transparent: true, opacity: 0.85 })
+  );
+  hintMarker.visible = false;
+  scene.add(hintMarker);
+
+  let mode = 'free';
+  let hintCubie = null;
+
+  function findCubieByFaces(faces) {
+    return allCubies.find((c) => {
+      const pf = c.userData.pieceFaces;
+      return pf.length === faces.length && faces.every((f) => pf.includes(f));
+    });
+  }
+
+  function getStickerWorldNormal(cubie, faceKey) {
+    const mesh = cubie.children.find((m) => m.userData && m.userData.faceKey === faceKey);
+    if (!mesh) return null;
+    const n = new THREE.Vector3(0, 0, 1).transformDirection(mesh.matrixWorld);
+    return new THREE.Vector3(Math.round(n.x), Math.round(n.y), Math.round(n.z));
+  }
+
+  function isEdgeSolved(pair) {
+    const cubie = findCubieByFaces(pair);
+    if (!cubie) return false;
+    return pair.every((f) => {
+      const n = getStickerWorldNormal(cubie, f);
+      return n && n.equals(FACE_HOME_DIR[f]);
+    });
+  }
+
+  function checkWhiteCross() {
+    const unsolved = WHITE_EDGES.filter((pair) => !isEdgeSolved(pair));
+    return { total: WHITE_EDGES.length, unsolved };
+  }
+
+  function clearHint() {
+    if (hintCubie) {
+      hintCubie.traverse((obj) => {
+        if (obj.material && obj.material.emissive) {
+          obj.material.emissive.set(0x000000);
+          obj.material.emissiveIntensity = 0;
+        }
+      });
+      hintCubie = null;
+    }
+    hintMarker.visible = false;
+  }
+
+  function showHintForEdge(pair) {
+    clearHint();
+    const cubie = findCubieByFaces(pair);
+    if (!cubie) return;
+    cubie.traverse((obj) => {
+      if (obj.material && obj.material.emissive) {
+        obj.material.emissive.set(HINT_COLOR);
+        obj.material.emissiveIntensity = 0.55;
+      }
+    });
+    hintCubie = cubie;
+
+    const target = FACE_HOME_DIR[pair[0]].clone().add(FACE_HOME_DIR[pair[1]]);
+    hintMarker.position.copy(target);
+    hintMarker.visible = true;
+  }
+
+  function refreshLearnHint() {
+    if (mode !== 'learn') return;
+    const result = checkWhiteCross();
+    const solved = result.total - result.unsolved.length;
+    if (result.unsolved.length === 0) {
+      clearHint();
+      phaseInfoEl.textContent = 'フェーズ1: 白い十字 — 完成！(' + solved + '/' + result.total + ')';
+      return;
+    }
+    phaseInfoEl.textContent = 'フェーズ1: 白い十字を作ろう (' + solved + '/' + result.total + ') — ピンク色のピースを、光っている位置(枠)まで動かそう';
+    showHintForEdge(result.unsolved[0]);
+  }
+
+  function setMode(next) {
+    mode = next;
+    modeFreeBtn.classList.toggle('active', mode === 'free');
+    modeLearnBtn.classList.toggle('active', mode === 'learn');
+    phaseInfoEl.classList.toggle('hidden', mode !== 'learn');
+    if (mode === 'free') {
+      clearHint();
+    } else {
+      clearSelection();
+      scrambleCube(20, refreshLearnHint);
+    }
+  }
+  modeFreeBtn.addEventListener('click', () => setMode('free'));
+  modeLearnBtn.addEventListener('click', () => setMode('learn'));
 
   // --- direction arrows: tap a sticker -> up/down/left/right appear around it ---
   const arrowTexture = makeArrowTexture();
@@ -570,16 +724,20 @@
         });
         setLayerEmissive(axis, layer, false);
         cubeRoot.remove(pivot);
-        if (!options.chained) setAnimating(false);
+        if (!options.chained) {
+          setAnimating(false);
+          if (mode === 'learn') refreshLearnHint();
+        }
         if (options.onComplete) options.onComplete();
       }
     }
     requestAnimationFrame(step);
   }
 
-  function scrambleCube(count) {
+  function scrambleCube(count, onComplete) {
     if (animating) return;
     clearSelection();
+    clearHint();
     setAnimating(true);
     const axes = ['x', 'y', 'z'];
     let lastAxis = null;
@@ -602,6 +760,7 @@
       if (idx >= moves.length) {
         setAnimating(false);
         lastMoveEl.textContent = '\u30b7\u30e3\u30c3\u30d5\u30eb\u5b8c\u4e86(' + count + '\u624b)';
+        if (onComplete) onComplete();
         return;
       }
       const mv = moves[idx++];
@@ -613,8 +772,12 @@
   resetBtn.addEventListener('click', () => {
     if (animating) return;
     clearSelection();
+    clearHint();
     buildCube();
     lastMoveEl.textContent = '\u64cd\u4f5c\u306a\u3057';
+    if (mode === 'learn') {
+      scrambleCube(20, refreshLearnHint);
+    }
   });
 
   shuffleBtn.addEventListener('click', () => {

@@ -374,12 +374,6 @@
   const arrowTexture = makeArrowTexture();
   const arrowKeys = ['up', 'down', 'left', 'right'];
   const arrowRotations = { up: Math.PI / 2, down: -Math.PI / 2, left: Math.PI, right: 0 };
-  const arrowOffsets = {
-    up: new THREE.Vector3(0, 0.42, 0),
-    down: new THREE.Vector3(0, -0.42, 0),
-    left: new THREE.Vector3(-0.42, 0, 0),
-    right: new THREE.Vector3(0.42, 0, 0),
-  };
   const arrowSprites = {};
   arrowKeys.forEach((key) => {
     const material = new THREE.SpriteMaterial({
@@ -459,10 +453,7 @@
       if (Math.abs(worldNormal[a]) > 0.5) faceAxis = a;
     });
     const otherAxes = axes.filter((a) => a !== faceAxis);
-    const colAxis = otherAxes[0];
-    const rowAxis = otherAxes[1];
-    const colLayer = Math.round(cubie.position[colAxis]);
-    const rowLayer = Math.round(cubie.position[rowAxis]);
+    const [axisA, axisB] = otherAxes;
 
     const point = hit.point.clone();
     const normalNudge = new THREE.Vector3(
@@ -471,11 +462,24 @@
       Math.round(worldNormal.z)
     ).multiplyScalar(0.16);
 
+    // Which of the two tangential axes actually produces vertical motion
+    // on screen right now, and which produces horizontal motion? This
+    // depends on the current camera angle, not a fixed axis order - so
+    // recompute it every time based on where the camera is looking.
+    const camAxes = getCameraAxes();
+    const vA = angularVelocity(axisA, 1, point);
+    const vB = angularVelocity(axisB, 1, point);
+    const verticalityA = Math.abs(vA.dot(camAxes.up));
+    const verticalityB = Math.abs(vB.dot(camAxes.up));
+    const colAxis = verticalityA >= verticalityB ? axisA : axisB;
+    const rowAxis = colAxis === axisA ? axisB : axisA;
+    const colLayer = Math.round(cubie.position[colAxis]);
+    const rowLayer = Math.round(cubie.position[rowAxis]);
+
     // Figure out which rotation sign actually moves THIS tapped point up
     // vs down / left vs right *on screen*, based on the camera's current
     // orientation - not a fixed world axis, so it stays correct no matter
     // how the view has been dragged around.
-    const camAxes = getCameraAxes();
     const velColPlus = angularVelocity(colAxis, 1, point);
     const velColMinus = angularVelocity(colAxis, -1, point);
     const upAngle = velColPlus.dot(camAxes.up) >= velColMinus.dot(camAxes.up) ? Math.PI / 2 : -Math.PI / 2;
@@ -493,9 +497,16 @@
       right: { axis: rowAxis, layer: rowLayer, angle: rightAngle },
     };
 
+    const screenOffsets = {
+      up: camAxes.up.clone().multiplyScalar(0.42),
+      down: camAxes.up.clone().multiplyScalar(-0.42),
+      left: camAxes.right.clone().multiplyScalar(-0.42),
+      right: camAxes.right.clone().multiplyScalar(0.42),
+    };
+
     arrowKeys.forEach((key) => {
       const sprite = arrowSprites[key];
-      sprite.position.copy(point).add(normalNudge).add(arrowOffsets[key]);
+      sprite.position.copy(point).add(normalNudge).add(screenOffsets[key]);
       sprite.userData.move = moves[key];
       sprite.visible = true;
     });

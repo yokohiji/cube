@@ -47,6 +47,12 @@
     margin: 0;
     line-height: 1.6;
   }
+  .cube-wrap {
+    position: relative;
+    width: 100%;
+    max-width: 480px;
+    margin-top: 20px;
+  }
   #cube-container {
     width: 100%;
     max-width: 480px;
@@ -80,7 +86,7 @@
     display: flex;
     gap: 8px;
   }
-  #reset-btn, #shuffle-btn {
+  #reset-btn, #shuffle-btn, #recenter-btn {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -97,7 +103,7 @@
     border-color: #3A3320;
     color: #E0A458;
   }
-  #reset-btn:disabled, #shuffle-btn:disabled {
+  #reset-btn:disabled, #shuffle-btn:disabled, #recenter-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
   }
@@ -113,47 +119,6 @@
     color: #ECEAE4;
     border-color: #8A8D96;
   }
-  .cube-wrap {
-    position: relative;
-    width: 100%;
-    max-width: 480px;
-    margin-top: 20px;
-  }
-  #dpad {
-    position: absolute;
-    right: 12px;
-    bottom: 12px;
-    display: none;
-    grid-template-columns: 40px 40px 40px;
-    grid-template-rows: 40px 40px 40px;
-    gap: 4px;
-  }
-  #dpad.visible {
-    display: grid;
-  }
-  #dpad button {
-    background: rgba(35, 38, 48, 0.9);
-    border: 1px solid #3a3f4a;
-    color: #ECEAE4;
-    border-radius: 8px;
-    font-size: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    padding: 0;
-    backdrop-filter: blur(2px);
-  }
-  #dpad button:hover {
-    border-color: #4FB6A8;
-  }
-  #dpad button:active {
-    transform: scale(0.94);
-  }
-  #dpad-up { grid-column: 2; grid-row: 1; }
-  #dpad-left { grid-column: 1; grid-row: 2; }
-  #dpad-right { grid-column: 3; grid-row: 2; }
-  #dpad-down { grid-column: 2; grid-row: 3; }
   .mode-switch {
     display: flex;
     gap: 8px;
@@ -196,16 +161,10 @@
         <button id="mode-learn-btn" class="mode-btn">学習モード</button>
       </div>
       <p id="phase-info" class="hidden"></p>
-      <p id="instructions">キューブのステッカーをタップすると、その列(青緑)と行(黄土色)がハイライトされ、上下左右の矢印が表示されます。ドラッグでビューを回転、ピンチ/ホイールで拡大縮小できます。</p>
+      <p id="instructions">ステッカーを指でドラッグすると、その方向に列・行が回転します。背景をドラッグすると視点が回転します。ピンチ/ホイールで拡大縮小できます。</p>
     </div>
     <div class="cube-wrap">
       <div id="cube-container"></div>
-      <div id="dpad">
-        <button id="dpad-up">↑</button>
-        <button id="dpad-left">←</button>
-        <button id="dpad-right">→</button>
-        <button id="dpad-down">↓</button>
-      </div>
     </div>
     <div class="footer-row">
       <div id="last-move" class="mono">操作なし</div>
@@ -258,7 +217,7 @@
   }
 
   const COLUMN_TINT = 0x4fb6a8;
-  const ROW_TINT = 0xe0a458;
+  const HINT_COLOR = 0xe85d9a;
 
   function easeOutCubic(t) {
     return 1 - Math.pow(1 - t, 3);
@@ -289,42 +248,15 @@
     return texture;
   }
 
-  function makeArrowTexture() {
-    const size = 160;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, size, size);
-    const midY = size / 2;
-    ctx.strokeStyle = '#F4FBFA';
-    ctx.fillStyle = '#F4FBFA';
-    ctx.lineWidth = 16;
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(16, midY);
-    ctx.lineTo(104, midY);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(92, midY - 30);
-    ctx.lineTo(148, midY);
-    ctx.lineTo(92, midY + 30);
-    ctx.closePath();
-    ctx.fill();
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    return texture;
-  }
-
   const container = document.getElementById('cube-container');
   const instructionsEl = document.getElementById('instructions');
   const lastMoveEl = document.getElementById('last-move');
   const resetBtn = document.getElementById('reset-btn');
   const shuffleBtn = document.getElementById('shuffle-btn');
   const recenterBtn = document.getElementById('recenter-btn');
-
-  const DEFAULT_INSTRUCTIONS = 'キューブのステッカーをタップすると、その列(青緑)と行(黄土色)がハイライトされ、上下左右の矢印が表示されます。ドラッグでビューを回転、ホイールで拡大縮小できます。';
-  const SELECTED_INSTRUCTIONS = '列(青緑)と行(黄土色)がハイライトされています。上下左右いずれかの矢印をタップすると回転します。';
+  const phaseInfoEl = document.getElementById('phase-info');
+  const modeFreeBtn = document.getElementById('mode-free-btn');
+  const modeLearnBtn = document.getElementById('mode-learn-btn');
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
@@ -420,11 +352,133 @@
 
   buildCube();
 
+  function setLayerEmissive(axis, layer, on, color) {
+    allCubies.forEach((c) => {
+      if (Math.round(c.position[axis]) === layer) {
+        c.traverse((obj) => {
+          if (obj.material && obj.material.emissive) {
+            obj.material.emissive.set(on ? color : 0x000000);
+            obj.material.emissiveIntensity = on ? 0.55 : 0;
+          }
+        });
+      }
+    });
+  }
+
+  function snapCubie(cubie) {
+    cubie.position.set(
+      Math.round(cubie.position.x),
+      Math.round(cubie.position.y),
+      Math.round(cubie.position.z)
+    );
+    const m = new THREE.Matrix4().makeRotationFromQuaternion(cubie.quaternion);
+    const el = m.elements;
+    [0, 1, 2, 4, 5, 6, 8, 9, 10].forEach((i) => {
+      el[i] = Math.round(el[i]);
+    });
+    cubie.quaternion.setFromRotationMatrix(m);
+  }
+
+  function setAnimating(v) {
+    animating = v;
+    resetBtn.disabled = v;
+    shuffleBtn.disabled = v;
+  }
+
+  function animatePivotTo(pivot, axisVec, fromAngle, toAngle, layerCubies, duration, onDone) {
+    const start = performance.now();
+    function step(now) {
+      const t = Math.min(1, (now - start) / duration);
+      const eased = easeOutCubic(t);
+      const angle = fromAngle + (toAngle - fromAngle) * eased;
+      pivot.quaternion.setFromAxisAngle(axisVec, angle);
+      if (t < 1) {
+        requestAnimationFrame(step);
+      } else {
+        layerCubies.forEach((c) => {
+          cubeRoot.attach(c);
+          snapCubie(c);
+        });
+        cubeRoot.remove(pivot);
+        if (onDone) onDone();
+      }
+    }
+    requestAnimationFrame(step);
+  }
+
+  function performMove(axis, layer, angle, options) {
+    options = options || {};
+    if (animating && !options.chained) return;
+    if (!options.chained) setAnimating(true);
+    if (!options.silent) {
+      lastMoveEl.textContent = '\u6700\u5f8c\u306e\u64cd\u4f5c: ' + moveLabel(axis, layer, angle);
+    }
+    const layerCubies = allCubies.filter((c) => Math.round(c.position[axis]) === layer);
+    setLayerEmissive(axis, layer, true, COLUMN_TINT);
+    const pivot = new THREE.Group();
+    cubeRoot.add(pivot);
+    layerCubies.forEach((c) => pivot.attach(c));
+    const axisVec = AXIS_VECTORS[axis];
+    const duration = options.duration || 230;
+    animatePivotTo(pivot, axisVec, 0, angle, layerCubies, duration, () => {
+      setLayerEmissive(axis, layer, false);
+      if (!options.chained) {
+        setAnimating(false);
+        if (mode === 'learn') refreshLearnHint();
+      }
+      if (options.onComplete) options.onComplete();
+    });
+  }
+
+  function scrambleCube(count, onComplete) {
+    if (animating) return;
+    clearHint();
+    setAnimating(true);
+    const axes = ['x', 'y', 'z'];
+    let lastAxis = null;
+    let lastLayer = null;
+    const moves = [];
+    for (let i = 0; i < count; i++) {
+      let axis, layer;
+      do {
+        axis = axes[Math.floor(Math.random() * 3)];
+        layer = Math.random() < 0.5 ? 1 : -1;
+      } while (axis === lastAxis && layer === lastLayer);
+      lastAxis = axis;
+      lastLayer = layer;
+      const angle = Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
+      moves.push({ axis, layer, angle });
+    }
+    let idx = 0;
+    lastMoveEl.textContent = '\u30b7\u30e3\u30c3\u30d5\u30eb\u4e2d...';
+    function next() {
+      if (idx >= moves.length) {
+        setAnimating(false);
+        lastMoveEl.textContent = '\u30b7\u30e3\u30c3\u30d5\u30eb\u5b8c\u4e86(' + count + '\u624b)';
+        if (onComplete) onComplete();
+        return;
+      }
+      const mv = moves[idx++];
+      performMove(mv.axis, mv.layer, mv.angle, { chained: true, silent: true, duration: 140, onComplete: next });
+    }
+    next();
+  }
+
+  resetBtn.addEventListener('click', () => {
+    if (animating) return;
+    clearHint();
+    buildCube();
+    lastMoveEl.textContent = '\u64cd\u4f5c\u306a\u3057';
+    if (mode === 'learn') {
+      scrambleCube(20, refreshLearnHint);
+    }
+  });
+
+  shuffleBtn.addEventListener('click', () => {
+    scrambleCube(20, mode === 'learn' ? refreshLearnHint : undefined);
+  });
+
   // --- learn mode: phase 1, the white cross ---
-  const phaseInfoEl = document.getElementById('phase-info');
-  const modeFreeBtn = document.getElementById('mode-free-btn');
-  const modeLearnBtn = document.getElementById('mode-learn-btn');
-  const HINT_COLOR = 0xe85d9a;
   const WHITE_EDGES = [['U', 'R'], ['U', 'L'], ['U', 'F'], ['U', 'B']];
 
   const hintMarkerGeom = new THREE.BoxGeometry(1.02, 1.02, 1.02);
@@ -502,10 +556,10 @@
     const solved = result.total - result.unsolved.length;
     if (result.unsolved.length === 0) {
       clearHint();
-      phaseInfoEl.textContent = 'フェーズ1: 白い十字 — 完成！(' + solved + '/' + result.total + ')';
+      phaseInfoEl.textContent = '\u30d5\u30a7\u30fc\u30ba1: \u767d\u3044\u5341\u5b57 \u2014 \u5b8c\u6210\uff01(' + solved + '/' + result.total + ')';
       return;
     }
-    phaseInfoEl.textContent = 'フェーズ1: 白い十字を作ろう (' + solved + '/' + result.total + ') — ピンク色のピースを、光っている位置(枠)まで動かそう';
+    phaseInfoEl.textContent = '\u30d5\u30a7\u30fc\u30ba1: \u767d\u3044\u5341\u5b57\u3092\u4f5c\u308d\u3046 (' + solved + '/' + result.total + ') \u2014 \u30d4\u30f3\u30af\u8272\u306e\u30d4\u30fc\u30b9\u3092\u3001\u679a\u306e\u4f4d\u7f6e\u307e\u3067\u52d5\u304b\u305d\u3046';
     showHintForEdge(result.unsolved[0]);
   }
 
@@ -517,288 +571,11 @@
     if (mode === 'free') {
       clearHint();
     } else {
-      clearSelection();
       scrambleCube(20, refreshLearnHint);
     }
   }
   modeFreeBtn.addEventListener('click', () => setMode('free'));
   modeLearnBtn.addEventListener('click', () => setMode('learn'));
-
-  // --- direction arrows: tap a sticker -> up/down/left/right appear around it ---
-  const arrowTexture = makeArrowTexture();
-  const arrowKeys = ['up', 'down', 'left', 'right'];
-  const arrowRotations = { up: Math.PI / 2, down: -Math.PI / 2, left: Math.PI, right: 0 };
-  const arrowSprites = {};
-  arrowKeys.forEach((key) => {
-    const material = new THREE.SpriteMaterial({
-      map: arrowTexture,
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-      rotation: arrowRotations[key],
-    });
-    const sprite = new THREE.Sprite(material);
-    sprite.scale.set(0.4, 0.4, 1);
-    sprite.renderOrder = 999;
-    sprite.visible = false;
-    scene.add(sprite);
-    arrowSprites[key] = sprite;
-  });
-  const arrowSpriteList = arrowKeys.map((k) => arrowSprites[k]);
-
-  function setLayerEmissive(axis, layer, on, color) {
-    allCubies.forEach((c) => {
-      if (Math.round(c.position[axis]) === layer) {
-        c.traverse((obj) => {
-          if (obj.material && obj.material.emissive) {
-            obj.material.emissive.set(on ? color : 0x000000);
-            obj.material.emissiveIntensity = on ? 0.55 : 0;
-          }
-        });
-      }
-    });
-  }
-
-  let currentSelection = null;
-  function clearSelection() {
-    if (currentSelection) {
-      setLayerEmissive(currentSelection.colAxis, currentSelection.colLayer, false);
-      setLayerEmissive(currentSelection.rowAxis, currentSelection.rowLayer, false);
-    }
-    arrowSpriteList.forEach((s) => { s.visible = false; });
-    currentSelection = null;
-    currentMoves = null;
-    dpad.classList.remove('visible');
-    instructionsEl.textContent = DEFAULT_INSTRUCTIONS;
-  }
-
-  const dpad = document.getElementById('dpad');
-  const dpadButtons = {
-    up: document.getElementById('dpad-up'),
-    down: document.getElementById('dpad-down'),
-    left: document.getElementById('dpad-left'),
-    right: document.getElementById('dpad-right'),
-  };
-  let currentMoves = null;
-
-  function angularVelocity(axis, sign, point) {
-    const omega = new THREE.Vector3();
-    omega[axis] = sign;
-    return omega.clone().cross(point);
-  }
-
-  function getCameraAxes() {
-    camera.updateMatrixWorld();
-    const right = new THREE.Vector3();
-    const up = new THREE.Vector3();
-    const forward = new THREE.Vector3();
-    camera.matrixWorld.extractBasis(right, up, forward);
-    return { right, up };
-  }
-
-  function selectSticker(hit) {
-    const mesh = hit.object;
-    const cubie = mesh.parent;
-
-    const worldNormal = new THREE.Vector3(0, 0, 1).transformDirection(mesh.matrixWorld);
-    const axes = ['x', 'y', 'z'];
-    let faceAxis = 'y';
-    axes.forEach((a) => {
-      if (Math.abs(worldNormal[a]) > 0.5) faceAxis = a;
-    });
-    const otherAxes = axes.filter((a) => a !== faceAxis);
-    const [axisA, axisB] = otherAxes;
-
-    const point = hit.point.clone();
-    const normalNudge = new THREE.Vector3(
-      Math.round(worldNormal.x),
-      Math.round(worldNormal.y),
-      Math.round(worldNormal.z)
-    ).multiplyScalar(0.16);
-
-    // Which of the two tangential axes actually produces vertical motion
-    // on screen right now, and which produces horizontal motion? This
-    // depends on the current camera angle, not a fixed axis order - so
-    // recompute it every time based on where the camera is looking.
-    const camAxes = getCameraAxes();
-    const vA = angularVelocity(axisA, 1, point);
-    const vB = angularVelocity(axisB, 1, point);
-    const verticalityA = Math.abs(vA.dot(camAxes.up));
-    const verticalityB = Math.abs(vB.dot(camAxes.up));
-    const colAxis = verticalityA >= verticalityB ? axisA : axisB;
-    const rowAxis = colAxis === axisA ? axisB : axisA;
-    const colLayer = Math.round(cubie.position[colAxis]);
-    const rowLayer = Math.round(cubie.position[rowAxis]);
-
-    // Figure out which rotation sign actually moves THIS tapped point up
-    // vs down / left vs right *on screen*, based on the camera's current
-    // orientation - not a fixed world axis, so it stays correct no matter
-    // how the view has been dragged around.
-    const velColPlus = angularVelocity(colAxis, 1, point);
-    const velColMinus = angularVelocity(colAxis, -1, point);
-    const upAngle = velColPlus.dot(camAxes.up) >= velColMinus.dot(camAxes.up) ? Math.PI / 2 : -Math.PI / 2;
-    const downAngle = -upAngle;
-
-    const velRowPlus = angularVelocity(rowAxis, 1, point);
-    const velRowMinus = angularVelocity(rowAxis, -1, point);
-    const rightAngle = velRowPlus.dot(camAxes.right) >= velRowMinus.dot(camAxes.right) ? Math.PI / 2 : -Math.PI / 2;
-    const leftAngle = -rightAngle;
-
-    const moves = {
-      up: { axis: colAxis, layer: colLayer, angle: upAngle },
-      down: { axis: colAxis, layer: colLayer, angle: downAngle },
-      left: { axis: rowAxis, layer: rowLayer, angle: leftAngle },
-      right: { axis: rowAxis, layer: rowLayer, angle: rightAngle },
-    };
-
-    const screenOffsets = {
-      up: camAxes.up.clone().multiplyScalar(0.42),
-      down: camAxes.up.clone().multiplyScalar(-0.42),
-      left: camAxes.right.clone().multiplyScalar(-0.42),
-      right: camAxes.right.clone().multiplyScalar(0.42),
-    };
-
-    arrowKeys.forEach((key) => {
-      const sprite = arrowSprites[key];
-      sprite.position.copy(point).add(normalNudge).add(screenOffsets[key]);
-      sprite.userData.move = moves[key];
-      sprite.visible = true;
-    });
-
-    setLayerEmissive(colAxis, colLayer, true, COLUMN_TINT);
-    setLayerEmissive(rowAxis, rowLayer, true, ROW_TINT);
-    currentSelection = { colAxis, colLayer, rowAxis, rowLayer };
-    currentMoves = moves;
-    dpad.classList.add('visible');
-    instructionsEl.textContent = SELECTED_INSTRUCTIONS;
-  }
-
-  function snapCubie(cubie) {
-    cubie.position.set(
-      Math.round(cubie.position.x),
-      Math.round(cubie.position.y),
-      Math.round(cubie.position.z)
-    );
-    const m = new THREE.Matrix4().makeRotationFromQuaternion(cubie.quaternion);
-    const el = m.elements;
-    [0, 1, 2, 4, 5, 6, 8, 9, 10].forEach((i) => {
-      el[i] = Math.round(el[i]);
-    });
-    cubie.quaternion.setFromRotationMatrix(m);
-  }
-
-  function setAnimating(v) {
-    animating = v;
-    resetBtn.disabled = v;
-    shuffleBtn.disabled = v;
-  }
-
-  function performMove(axis, layer, angle, options) {
-    options = options || {};
-    if (animating && !options.chained) return;
-    if (!options.chained) setAnimating(true);
-    if (!options.silent) {
-      lastMoveEl.textContent = '\u6700\u5f8c\u306e\u64cd\u4f5c: ' + moveLabel(axis, layer, angle);
-    }
-
-    const layerCubies = allCubies.filter((c) => Math.round(c.position[axis]) === layer);
-    setLayerEmissive(axis, layer, true, COLUMN_TINT);
-    const pivot = new THREE.Group();
-    cubeRoot.add(pivot);
-    layerCubies.forEach((c) => pivot.attach(c));
-
-    const axisVec = AXIS_VECTORS[axis];
-    const duration = options.duration || 230;
-    const start = performance.now();
-
-    function step(now) {
-      const progress = Math.min(1, (now - start) / duration);
-      const eased = easeOutCubic(progress);
-      pivot.quaternion.setFromAxisAngle(axisVec, angle * eased);
-      if (progress < 1) {
-        requestAnimationFrame(step);
-      } else {
-        layerCubies.forEach((c) => {
-          cubeRoot.attach(c);
-          snapCubie(c);
-        });
-        setLayerEmissive(axis, layer, false);
-        cubeRoot.remove(pivot);
-        if (!options.chained) {
-          setAnimating(false);
-          if (mode === 'learn') refreshLearnHint();
-        }
-        if (options.onComplete) options.onComplete();
-      }
-    }
-    requestAnimationFrame(step);
-  }
-
-  function scrambleCube(count, onComplete) {
-    if (animating) return;
-    clearSelection();
-    clearHint();
-    setAnimating(true);
-    const axes = ['x', 'y', 'z'];
-    let lastAxis = null;
-    let lastLayer = null;
-    const moves = [];
-    for (let i = 0; i < count; i++) {
-      let axis, layer;
-      do {
-        axis = axes[Math.floor(Math.random() * 3)];
-        layer = Math.random() < 0.5 ? 1 : -1;
-      } while (axis === lastAxis && layer === lastLayer);
-      lastAxis = axis;
-      lastLayer = layer;
-      const angle = Math.random() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
-      moves.push({ axis, layer, angle });
-    }
-    let idx = 0;
-    lastMoveEl.textContent = '\u30b7\u30e3\u30c3\u30d5\u30eb\u4e2d...';
-    function next() {
-      if (idx >= moves.length) {
-        setAnimating(false);
-        lastMoveEl.textContent = '\u30b7\u30e3\u30c3\u30d5\u30eb\u5b8c\u4e86(' + count + '\u624b)';
-        if (onComplete) onComplete();
-        return;
-      }
-      const mv = moves[idx++];
-      performMove(mv.axis, mv.layer, mv.angle, { chained: true, silent: true, duration: 140, onComplete: next });
-    }
-    next();
-  }
-
-  resetBtn.addEventListener('click', () => {
-    if (animating) return;
-    clearSelection();
-    clearHint();
-    buildCube();
-    lastMoveEl.textContent = '\u64cd\u4f5c\u306a\u3057';
-    if (mode === 'learn') {
-      scrambleCube(20, refreshLearnHint);
-    }
-  });
-
-  shuffleBtn.addEventListener('click', () => {
-    scrambleCube(20);
-  });
-
-  Object.keys(dpadButtons).forEach((key) => {
-    dpadButtons[key].addEventListener('click', () => {
-      if (!currentMoves) return;
-      const mv = currentMoves[key];
-      clearSelection();
-      performMove(mv.axis, mv.layer, mv.angle);
-    });
-  });
-
-  recenterBtn.addEventListener('click', () => {
-    azimuth = DEFAULT_AZIMUTH;
-    polar = DEFAULT_POLAR;
-    radius = DEFAULT_RADIUS;
-    updateCameraPosition();
-  });
 
   // --- camera orbit ---
   const DEFAULT_AZIMUTH = Math.PI / 4;
@@ -815,6 +592,28 @@
   }
   updateCameraPosition();
 
+  function getCameraAxes() {
+    camera.updateMatrixWorld();
+    const right = new THREE.Vector3();
+    const up = new THREE.Vector3();
+    const forward = new THREE.Vector3();
+    camera.matrixWorld.extractBasis(right, up, forward);
+    return { right, up };
+  }
+
+  function angularVelocity(axis, sign, point) {
+    const omega = new THREE.Vector3();
+    omega[axis] = sign;
+    return omega.clone().cross(point);
+  }
+
+  recenterBtn.addEventListener('click', () => {
+    azimuth = DEFAULT_AZIMUTH;
+    polar = DEFAULT_POLAR;
+    radius = DEFAULT_RADIUS;
+    updateCameraPosition();
+  });
+
   const raycaster = new THREE.Raycaster();
   const pointerNDC = new THREE.Vector2();
   function getNDC(clientX, clientY) {
@@ -825,42 +624,130 @@
     };
   }
 
-  function handleTap(clientX, clientY) {
-    if (animating) return;
-    const ndc = getNDC(clientX, clientY);
-    pointerNDC.set(ndc.x, ndc.y);
-    raycaster.setFromCamera(pointerNDC, camera);
-
-    if (currentSelection) {
-      const arrowHits = raycaster.intersectObjects(arrowSpriteList);
-      if (arrowHits.length > 0) {
-        const mv = arrowHits[0].object.userData.move;
-        clearSelection();
-        performMove(mv.axis, mv.layer, mv.angle);
-        return;
-      }
-    }
-
-    const stickerHits = raycaster.intersectObjects(stickerMeshes);
-    if (stickerHits.length > 0) {
-      clearSelection();
-      selectSticker(stickerHits[0]);
-      return;
-    }
-
-    clearSelection();
-  }
-
-  let dragged = false;
-  let prevX = 0;
-  let prevY = 0;
-  const DRAG_THRESHOLD = 6;
+  // --- drag-to-rotate: drag a sticker in a direction to turn its layer,
+  // drag the background to orbit the view (like a real cube app) ---
+  const DRAG_LOCK_PX = 10;
+  const DRAG_FULL_TURN_PX = 110;
   const MIN_RADIUS = 4.5;
   const MAX_RADIUS = 10;
+
+  function buildDragCandidate(hit) {
+    const mesh = hit.object;
+    const cubie = mesh.parent;
+    const worldNormal = new THREE.Vector3(0, 0, 1).transformDirection(mesh.matrixWorld);
+    const axes = ['x', 'y', 'z'];
+    let faceAxis = 'y';
+    axes.forEach((a) => {
+      if (Math.abs(worldNormal[a]) > 0.5) faceAxis = a;
+    });
+    const otherAxes = axes.filter((a) => a !== faceAxis);
+    const [axisA, axisB] = otherAxes;
+    const point = hit.point.clone();
+    const camAxes = getCameraAxes();
+
+    const vA = angularVelocity(axisA, 1, point);
+    const vB = angularVelocity(axisB, 1, point);
+    const verticalityA = Math.abs(vA.dot(camAxes.up));
+    const verticalityB = Math.abs(vB.dot(camAxes.up));
+    const colAxis = verticalityA >= verticalityB ? axisA : axisB;
+    const rowAxis = colAxis === axisA ? axisB : axisA;
+    const colLayer = Math.round(cubie.position[colAxis]);
+    const rowLayer = Math.round(cubie.position[rowAxis]);
+
+    const velColPlus = angularVelocity(colAxis, 1, point);
+    const velColMinus = angularVelocity(colAxis, -1, point);
+    const upAngle = velColPlus.dot(camAxes.up) >= velColMinus.dot(camAxes.up) ? Math.PI / 2 : -Math.PI / 2;
+    const downAngle = -upAngle;
+
+    const velRowPlus = angularVelocity(rowAxis, 1, point);
+    const velRowMinus = angularVelocity(rowAxis, -1, point);
+    const rightAngle = velRowPlus.dot(camAxes.right) >= velRowMinus.dot(camAxes.right) ? Math.PI / 2 : -Math.PI / 2;
+    const leftAngle = -rightAngle;
+
+    return {
+      phase: 'pending',
+      colAxis, colLayer, rowAxis, rowLayer,
+      upAngle, downAngle, leftAngle, rightAngle,
+      startX: 0, startY: 0,
+    };
+  }
+
+  function lockDragDirection(dragState, clientX, clientY) {
+    const dx = clientX - dragState.startX;
+    const dy = clientY - dragState.startY;
+    const horizontal = Math.abs(dx) >= Math.abs(dy);
+    let axis, layer, targetAngle, sign;
+    if (horizontal) {
+      axis = dragState.rowAxis;
+      layer = dragState.rowLayer;
+      targetAngle = dx > 0 ? dragState.rightAngle : dragState.leftAngle;
+      sign = Math.sign(dx) || 1;
+    } else {
+      axis = dragState.colAxis;
+      layer = dragState.colLayer;
+      targetAngle = dy < 0 ? dragState.upAngle : dragState.downAngle;
+      sign = Math.sign(dy) || 1;
+    }
+    const layerCubies = allCubies.filter((c) => Math.round(c.position[axis]) === layer);
+    const pivot = new THREE.Group();
+    cubeRoot.add(pivot);
+    layerCubies.forEach((c) => pivot.attach(c));
+    setLayerEmissive(axis, layer, true, COLUMN_TINT);
+
+    dragState.phase = 'active';
+    dragState.horizontal = horizontal;
+    dragState.axis = axis;
+    dragState.layer = layer;
+    dragState.targetAngle = targetAngle;
+    dragState.sign = sign;
+    dragState.pivot = pivot;
+    dragState.layerCubies = layerCubies;
+    dragState.lockX = clientX;
+    dragState.lockY = clientY;
+    dragState.lastProgress = 0;
+    setAnimating(true);
+  }
+
+  function updateDragProgress(dragState, clientX, clientY) {
+    const rawDelta = dragState.horizontal ? clientX - dragState.lockX : clientY - dragState.lockY;
+    const progress = Math.max(0, Math.min(1, (rawDelta * dragState.sign) / DRAG_FULL_TURN_PX));
+    dragState.lastProgress = progress;
+    dragState.pivot.quaternion.setFromAxisAngle(AXIS_VECTORS[dragState.axis], dragState.targetAngle * progress);
+  }
+
+  function finishDrag(dragState) {
+    if (dragState.phase !== 'active') return;
+    const { axis, layer, targetAngle, pivot, layerCubies, lastProgress } = dragState;
+    const finishToTarget = lastProgress >= 0.5;
+    const fromAngle = targetAngle * lastProgress;
+    const toAngle = finishToTarget ? targetAngle : 0;
+    animatePivotTo(pivot, AXIS_VECTORS[axis], fromAngle, toAngle, layerCubies, 150, () => {
+      setLayerEmissive(axis, layer, false);
+      setAnimating(false);
+      if (finishToTarget) {
+        lastMoveEl.textContent = '\u6700\u5f8c\u306e\u64cd\u4f5c: ' + moveLabel(axis, layer, targetAngle);
+      }
+      if (mode === 'learn') refreshLearnHint();
+    });
+  }
+
+  function cancelDrag(dragState) {
+    if (dragState.phase !== 'active') return;
+    const { axis, layer, targetAngle, pivot, layerCubies, lastProgress } = dragState;
+    const fromAngle = targetAngle * lastProgress;
+    animatePivotTo(pivot, AXIS_VECTORS[axis], fromAngle, 0, layerCubies, 120, () => {
+      setLayerEmissive(axis, layer, false);
+      setAnimating(false);
+    });
+  }
 
   const activePointers = new Map();
   let pinchStartDistance = 0;
   let pinchStartRadius = radius;
+  let orbitPointerId = null;
+  let orbitPrevX = 0;
+  let orbitPrevY = 0;
+  let pieceDrag = null;
 
   function pointerDistance() {
     const pts = [...activePointers.values()];
@@ -870,17 +757,37 @@
   }
 
   dom.addEventListener('pointerdown', (e) => {
-    dom.setPointerCapture && dom.setPointerCapture(e.pointerId);
     activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (activePointers.size === 1) {
-      dragged = false;
-      prevX = e.clientX;
-      prevY = e.clientY;
-      container.style.cursor = 'grabbing';
-    } else if (activePointers.size === 2) {
-      dragged = true; // a pinch should never register as a tap
+
+    if (activePointers.size === 2) {
+      if (pieceDrag) {
+        cancelDrag(pieceDrag);
+        pieceDrag = null;
+      }
+      orbitPointerId = null;
       pinchStartDistance = pointerDistance();
       pinchStartRadius = radius;
+      return;
+    }
+
+    if (activePointers.size === 1) {
+      if (animating) return;
+      const ndc = getNDC(e.clientX, e.clientY);
+      pointerNDC.set(ndc.x, ndc.y);
+      raycaster.setFromCamera(pointerNDC, camera);
+      const hits = raycaster.intersectObjects(stickerMeshes);
+      if (hits.length > 0) {
+        pieceDrag = buildDragCandidate(hits[0]);
+        pieceDrag.startX = e.clientX;
+        pieceDrag.startY = e.clientY;
+        orbitPointerId = null;
+      } else {
+        pieceDrag = null;
+        orbitPointerId = e.pointerId;
+        orbitPrevX = e.clientX;
+        orbitPrevY = e.clientY;
+        container.style.cursor = 'grabbing';
+      }
     }
   });
 
@@ -898,12 +805,24 @@
       return;
     }
 
-    if (activePointers.size === 1) {
-      const dx = e.clientX - prevX;
-      const dy = e.clientY - prevY;
-      if (Math.abs(dx) + Math.abs(dy) > DRAG_THRESHOLD) dragged = true;
-      prevX = e.clientX;
-      prevY = e.clientY;
+    if (pieceDrag) {
+      if (pieceDrag.phase === 'pending') {
+        const dx = e.clientX - pieceDrag.startX;
+        const dy = e.clientY - pieceDrag.startY;
+        if (Math.abs(dx) + Math.abs(dy) >= DRAG_LOCK_PX) {
+          lockDragDirection(pieceDrag, e.clientX, e.clientY);
+        }
+      } else if (pieceDrag.phase === 'active') {
+        updateDragProgress(pieceDrag, e.clientX, e.clientY);
+      }
+      return;
+    }
+
+    if (orbitPointerId === e.pointerId) {
+      const dx = e.clientX - orbitPrevX;
+      const dy = e.clientY - orbitPrevY;
+      orbitPrevX = e.clientX;
+      orbitPrevY = e.clientY;
       azimuth -= dx * 0.006;
       polar -= dy * 0.006;
       polar = Math.max(0.25, Math.min(Math.PI - 0.25, polar));
@@ -912,18 +831,16 @@
   });
 
   function endPointer(e) {
-    const wasSingle = activePointers.size === 1;
     activePointers.delete(e.pointerId);
-    if (wasSingle && !dragged) {
-      handleTap(e.clientX, e.clientY);
+
+    if (pieceDrag) {
+      if (pieceDrag.phase === 'active') {
+        finishDrag(pieceDrag);
+      }
+      pieceDrag = null;
     }
-    if (activePointers.size === 1) {
-      // transitioning from a pinch back to a single touch: resync so it
-      // doesn't jump, and don't treat the remaining touch as a fresh tap
-      const [remaining] = [...activePointers.values()];
-      prevX = remaining.x;
-      prevY = remaining.y;
-      dragged = true;
+    if (orbitPointerId === e.pointerId) {
+      orbitPointerId = null;
     }
     if (activePointers.size === 0) {
       container.style.cursor = 'grab';

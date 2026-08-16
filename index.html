@@ -88,7 +88,31 @@
     display: flex;
     gap: 8px;
   }
-  #reset-btn, #shuffle-btn, #recenter-btn {
+  .whole-cube-row {
+    width: 100%;
+    max-width: 480px;
+    margin-top: 12px;
+  }
+  #flip-btn {
+    width: 100%;
+    background: transparent;
+    border: 1px solid #3a3f4a;
+    color: #ECEAE4;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    font-family: 'Inter', sans-serif;
+    cursor: pointer;
+  }
+  #flip-btn:hover:not(:disabled) {
+    border-color: #4FB6A8;
+  }
+  #flip-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  #reset-btn, #shuffle-btn, #recenter-btn, #undo-btn {
     display: flex;
     align-items: center;
     gap: 6px;
@@ -105,9 +129,13 @@
     border-color: #3A3320;
     color: #E0A458;
   }
-  #reset-btn:disabled, #shuffle-btn:disabled, #recenter-btn:disabled {
+  #reset-btn:disabled, #shuffle-btn:disabled, #recenter-btn:disabled, #undo-btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+  #undo-btn:hover:not(:disabled) {
+    color: #ECEAE4;
+    border-color: #4FB6A8;
   }
   #reset-btn:hover:not(:disabled) {
     color: #ECEAE4;
@@ -121,35 +149,8 @@
     color: #ECEAE4;
     border-color: #8A8D96;
   }
-  .mode-switch {
-    display: flex;
-    gap: 8px;
-    margin: 10px 0;
-  }
-  .mode-btn {
-    background: transparent;
-    border: 1px solid #2F323C;
-    color: #8A8D96;
-    border-radius: 999px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-family: 'Inter', sans-serif;
-    cursor: pointer;
-  }
-  .mode-btn.active {
-    background: #4FB6A8;
-    border-color: #4FB6A8;
-    color: #101114;
-    font-weight: 600;
-  }
   .hidden {
     display: none !important;
-  }
-  #phase-info {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
-    color: #E85D9A;
-    margin: 0 0 8px;
   }
 </style>
 </head>
@@ -158,19 +159,18 @@
     <div class="header">
       <div class="eyebrow">3×3 CUBE — STEP 1</div>
       <h1>回転操作の確認</h1>
-      <div class="mode-switch">
-        <button id="mode-free-btn" class="mode-btn active">自由モード</button>
-        <button id="mode-learn-btn" class="mode-btn">学習モード</button>
-      </div>
-      <p id="phase-info" class="hidden"></p>
       <p id="instructions">ステッカーを指でドラッグすると、その方向に列・行が回転します。背景をドラッグすると視点が回転します。ピンチ/ホイールで拡大縮小できます。</p>
     </div>
     <div class="cube-wrap">
       <div id="cube-container"></div>
     </div>
+    <div class="whole-cube-row">
+      <button id="flip-btn">⇅ 上下を反転(白を下に)</button>
+    </div>
     <div class="footer-row">
       <div id="last-move" class="mono">操作なし</div>
       <div class="button-group">
+        <button id="undo-btn">↩︎ 一手戻る</button>
         <button id="recenter-btn">⤾ 正面に戻す</button>
         <button id="shuffle-btn">🔀 シャッフル</button>
         <button id="reset-btn">↺ リセット</button>
@@ -195,19 +195,6 @@
     y: new THREE.Vector3(0, 1, 0),
     z: new THREE.Vector3(0, 0, 1),
   };
-  // Centers never change which way they face (a move on their own layer
-  // only ever spins them around their own axis), so this mapping is a
-  // fixed ground truth for "where does color X belong" no matter how
-  // scrambled the cube is.
-  const FACE_HOME_DIR = {
-    U: new THREE.Vector3(0, 1, 0),
-    D: new THREE.Vector3(0, -1, 0),
-    L: new THREE.Vector3(-1, 0, 0),
-    R: new THREE.Vector3(1, 0, 0),
-    F: new THREE.Vector3(0, 0, 1),
-    B: new THREE.Vector3(0, 0, -1),
-  };
-
   const AXIS_LAYER_NAMES = {
     x: { '1': 'R', '-1': 'L', '0': 'M' },
     y: { '1': 'U', '-1': 'D', '0': 'E' },
@@ -256,6 +243,8 @@
   const resetBtn = document.getElementById('reset-btn');
   const shuffleBtn = document.getElementById('shuffle-btn');
   const recenterBtn = document.getElementById('recenter-btn');
+  const flipBtn = document.getElementById('flip-btn');
+  const undoBtn = document.getElementById('undo-btn');
   const phaseInfoEl = document.getElementById('phase-info');
   const modeFreeBtn = document.getElementById('mode-free-btn');
   const modeLearnBtn = document.getElementById('mode-learn-btn');
@@ -381,10 +370,17 @@
     cubie.quaternion.setFromRotationMatrix(m);
   }
 
+  const moveHistory = [];
+  function updateUndoButton() {
+    undoBtn.disabled = animating || moveHistory.length === 0;
+  }
+
   function setAnimating(v) {
     animating = v;
     resetBtn.disabled = v;
     shuffleBtn.disabled = v;
+    flipBtn.disabled = v;
+    updateUndoButton();
   }
 
   function animatePivotTo(pivot, axisVec, fromAngle, toAngle, layerCubies, duration, onDone) {
@@ -432,9 +428,52 @@
     });
   }
 
+  // Rotate every piece together (a "whole cube" reorientation, like x2 in
+  // cubing notation) - unlike performMove this isn't a scramble/solve move,
+  // it just changes which side you're working from. The centers move too,
+  // which is why the learn-mode "home direction" is looked up dynamically
+  // rather than assumed fixed (see getHomeDir below).
+  function rotateWholeCube(axis, angle, recordHistory) {
+    if (recordHistory === undefined) recordHistory = true;
+    if (animating) return;
+    setAnimating(true);
+    const layerCubies = allCubies.slice();
+    const pivot = new THREE.Group();
+    cubeRoot.add(pivot);
+    layerCubies.forEach((c) => pivot.attach(c));
+    animatePivotTo(pivot, AXIS_VECTORS[axis], 0, angle, layerCubies, 260, () => {
+      setAnimating(false);
+      if (recordHistory) {
+        moveHistory.push({ type: 'flip', axis, angle });
+        updateUndoButton();
+      }
+      if (mode === 'learn') refreshLearnHint();
+    });
+  }
+
+  flipBtn.addEventListener('click', () => {
+    rotateWholeCube('x', Math.PI);
+  });
+
+  function undoLastMove() {
+    if (animating) return;
+    const last = moveHistory.pop();
+    updateUndoButton();
+    if (!last) return;
+    if (last.type === 'layer') {
+      performMove(last.axis, last.layer, -last.angle, { duration: 180 });
+    } else if (last.type === 'flip') {
+      rotateWholeCube(last.axis, -last.angle, false);
+    }
+  }
+  undoBtn.addEventListener('click', undoLastMove);
+  updateUndoButton();
+
   function scrambleCube(count, onComplete) {
     if (animating) return;
     clearHint();
+    moveHistory.length = 0;
+    updateUndoButton();
     setAnimating(true);
     const axes = ['x', 'y', 'z'];
     let lastAxis = null;
@@ -470,6 +509,8 @@
     if (animating) return;
     clearHint();
     buildCube();
+    moveHistory.length = 0;
+    updateUndoButton();
     lastMoveEl.textContent = '\u64cd\u4f5c\u306a\u3057';
     if (mode === 'learn') {
       scrambleCube(20, refreshLearnHint);
@@ -508,12 +549,21 @@
     return new THREE.Vector3(Math.round(n.x), Math.round(n.y), Math.round(n.z));
   }
 
+  // Where does color X currently belong? Centers carry the color scheme,
+  // but a whole-cube flip (see rotateWholeCube) moves centers too, so this
+  // is looked up from the center's live orientation rather than assumed
+  // fixed to a world axis.
+  function getHomeDir(faceKey) {
+    const center = findCubieByFaces([faceKey]);
+    return getStickerWorldNormal(center, faceKey);
+  }
+
   function isEdgeSolved(pair) {
     const cubie = findCubieByFaces(pair);
     if (!cubie) return false;
     return pair.every((f) => {
       const n = getStickerWorldNormal(cubie, f);
-      return n && n.equals(FACE_HOME_DIR[f]);
+      return n && n.equals(getHomeDir(f));
     });
   }
 
@@ -547,7 +597,7 @@
     });
     hintCubie = cubie;
 
-    const target = FACE_HOME_DIR[pair[0]].clone().add(FACE_HOME_DIR[pair[1]]);
+    const target = getHomeDir(pair[0]).clone().add(getHomeDir(pair[1]));
     hintMarker.position.copy(target);
     hintMarker.visible = true;
   }
@@ -728,6 +778,8 @@
       setAnimating(false);
       if (finishToTarget) {
         lastMoveEl.textContent = '\u6700\u5f8c\u306e\u64cd\u4f5c: ' + moveLabel(axis, layer, targetAngle);
+        moveHistory.push({ type: 'layer', axis, layer, angle: targetAngle });
+        updateUndoButton();
       }
       if (mode === 'learn') refreshLearnHint();
     });

@@ -76,8 +76,8 @@
     max-width: 480px;
     margin-top: 16px;
     display: flex;
-    justify-content: space-between;
-    align-items: center;
+    flex-direction: column;
+    gap: 10px;
   }
   #last-move {
     font-family: 'JetBrains Mono', monospace;
@@ -85,8 +85,13 @@
     color: #8A8D96;
   }
   .button-group {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
     gap: 8px;
+  }
+  .button-group button {
+    width: 100%;
+    justify-content: center;
   }
   .whole-cube-row {
     width: 100%;
@@ -206,7 +211,6 @@
   }
 
   const COLUMN_TINT = 0x4fb6a8;
-  const HINT_COLOR = 0xe85d9a;
 
   function easeOutCubic(t) {
     return 1 - Math.pow(1 - t, 3);
@@ -245,9 +249,6 @@
   const recenterBtn = document.getElementById('recenter-btn');
   const flipBtn = document.getElementById('flip-btn');
   const undoBtn = document.getElementById('undo-btn');
-  const phaseInfoEl = document.getElementById('phase-info');
-  const modeFreeBtn = document.getElementById('mode-free-btn');
-  const modeLearnBtn = document.getElementById('mode-learn-btn');
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 50);
@@ -422,7 +423,6 @@
       setLayerEmissive(axis, layer, false);
       if (!options.chained) {
         setAnimating(false);
-        if (mode === 'learn') refreshLearnHint();
       }
       if (options.onComplete) options.onComplete();
     });
@@ -430,9 +430,7 @@
 
   // Rotate every piece together (a "whole cube" reorientation, like x2 in
   // cubing notation) - unlike performMove this isn't a scramble/solve move,
-  // it just changes which side you're working from. The centers move too,
-  // which is why the learn-mode "home direction" is looked up dynamically
-  // rather than assumed fixed (see getHomeDir below).
+  // it just changes which side you're working from.
   function rotateWholeCube(axis, angle, recordHistory) {
     if (recordHistory === undefined) recordHistory = true;
     if (animating) return;
@@ -447,7 +445,6 @@
         moveHistory.push({ type: 'flip', axis, angle });
         updateUndoButton();
       }
-      if (mode === 'learn') refreshLearnHint();
     });
   }
 
@@ -471,7 +468,6 @@
 
   function scrambleCube(count, onComplete) {
     if (animating) return;
-    clearHint();
     moveHistory.length = 0;
     updateUndoButton();
     setAnimating(true);
@@ -507,127 +503,15 @@
 
   resetBtn.addEventListener('click', () => {
     if (animating) return;
-    clearHint();
     buildCube();
     moveHistory.length = 0;
     updateUndoButton();
     lastMoveEl.textContent = '\u64cd\u4f5c\u306a\u3057';
-    if (mode === 'learn') {
-      scrambleCube(20, refreshLearnHint);
-    }
   });
 
   shuffleBtn.addEventListener('click', () => {
-    scrambleCube(20, mode === 'learn' ? refreshLearnHint : undefined);
+    scrambleCube(20);
   });
-
-  // --- learn mode: phase 1, the white cross ---
-  const WHITE_EDGES = [['U', 'R'], ['U', 'L'], ['U', 'F'], ['U', 'B']];
-
-  const hintMarkerGeom = new THREE.BoxGeometry(1.02, 1.02, 1.02);
-  const hintMarker = new THREE.LineSegments(
-    new THREE.EdgesGeometry(hintMarkerGeom),
-    new THREE.LineBasicMaterial({ color: HINT_COLOR, transparent: true, opacity: 0.85 })
-  );
-  hintMarker.visible = false;
-  scene.add(hintMarker);
-
-  let mode = 'free';
-  let hintCubie = null;
-
-  function findCubieByFaces(faces) {
-    return allCubies.find((c) => {
-      const pf = c.userData.pieceFaces;
-      return pf.length === faces.length && faces.every((f) => pf.includes(f));
-    });
-  }
-
-  function getStickerWorldNormal(cubie, faceKey) {
-    const mesh = cubie.children.find((m) => m.userData && m.userData.faceKey === faceKey);
-    if (!mesh) return null;
-    const n = new THREE.Vector3(0, 0, 1).transformDirection(mesh.matrixWorld);
-    return new THREE.Vector3(Math.round(n.x), Math.round(n.y), Math.round(n.z));
-  }
-
-  // Where does color X currently belong? Centers carry the color scheme,
-  // but a whole-cube flip (see rotateWholeCube) moves centers too, so this
-  // is looked up from the center's live orientation rather than assumed
-  // fixed to a world axis.
-  function getHomeDir(faceKey) {
-    const center = findCubieByFaces([faceKey]);
-    return getStickerWorldNormal(center, faceKey);
-  }
-
-  function isEdgeSolved(pair) {
-    const cubie = findCubieByFaces(pair);
-    if (!cubie) return false;
-    return pair.every((f) => {
-      const n = getStickerWorldNormal(cubie, f);
-      return n && n.equals(getHomeDir(f));
-    });
-  }
-
-  function checkWhiteCross() {
-    const unsolved = WHITE_EDGES.filter((pair) => !isEdgeSolved(pair));
-    return { total: WHITE_EDGES.length, unsolved };
-  }
-
-  function clearHint() {
-    if (hintCubie) {
-      hintCubie.traverse((obj) => {
-        if (obj.material && obj.material.emissive) {
-          obj.material.emissive.set(0x000000);
-          obj.material.emissiveIntensity = 0;
-        }
-      });
-      hintCubie = null;
-    }
-    hintMarker.visible = false;
-  }
-
-  function showHintForEdge(pair) {
-    clearHint();
-    const cubie = findCubieByFaces(pair);
-    if (!cubie) return;
-    cubie.traverse((obj) => {
-      if (obj.material && obj.material.emissive) {
-        obj.material.emissive.set(HINT_COLOR);
-        obj.material.emissiveIntensity = 0.55;
-      }
-    });
-    hintCubie = cubie;
-
-    const target = getHomeDir(pair[0]).clone().add(getHomeDir(pair[1]));
-    hintMarker.position.copy(target);
-    hintMarker.visible = true;
-  }
-
-  function refreshLearnHint() {
-    if (mode !== 'learn') return;
-    const result = checkWhiteCross();
-    const solved = result.total - result.unsolved.length;
-    if (result.unsolved.length === 0) {
-      clearHint();
-      phaseInfoEl.textContent = '\u30d5\u30a7\u30fc\u30ba1: \u767d\u3044\u5341\u5b57 \u2014 \u5b8c\u6210\uff01(' + solved + '/' + result.total + ')';
-      return;
-    }
-    phaseInfoEl.textContent = '\u30d5\u30a7\u30fc\u30ba1: \u767d\u3044\u5341\u5b57\u3092\u4f5c\u308d\u3046 (' + solved + '/' + result.total + ') \u2014 \u30d4\u30f3\u30af\u8272\u306e\u30d4\u30fc\u30b9\u3092\u3001\u679a\u306e\u4f4d\u7f6e\u307e\u3067\u52d5\u304b\u305d\u3046';
-    showHintForEdge(result.unsolved[0]);
-  }
-
-  function setMode(next) {
-    mode = next;
-    modeFreeBtn.classList.toggle('active', mode === 'free');
-    modeLearnBtn.classList.toggle('active', mode === 'learn');
-    phaseInfoEl.classList.toggle('hidden', mode !== 'learn');
-    if (mode === 'free') {
-      clearHint();
-    } else {
-      scrambleCube(20, refreshLearnHint);
-    }
-  }
-  modeFreeBtn.addEventListener('click', () => setMode('free'));
-  modeLearnBtn.addEventListener('click', () => setMode('learn'));
 
   // --- camera orbit ---
   const DEFAULT_AZIMUTH = Math.PI / 4;
@@ -781,7 +665,6 @@
         moveHistory.push({ type: 'layer', axis, layer, angle: targetAngle });
         updateUndoButton();
       }
-      if (mode === 'learn') refreshLearnHint();
     });
   }
 
